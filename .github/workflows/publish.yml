@@ -18,8 +18,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Read the pinned GVHMR revision
+        id: gvhmr
+        run: |
+          revision="$(git rev-parse HEAD:third_party/GVHMR)"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
       - name: Free disk for CUDA layers
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/local/share/chromium
@@ -34,6 +37,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          build-args: GVHMR_REVISION=${{ steps.gvhmr.outputs.revision }}
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest

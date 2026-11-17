@@ -27,7 +27,16 @@ RUN MAX_JOBS=2 TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" TORCH_EXTENSIONS_DIR
     python -c 'from fdanyone.reconstruction.kernels import extension; print(extension().__file__)' \
     && cp /tmp/torch-build/fdanyone_4dgs_kernels/fdanyone_4dgs_kernels.so fdanyone/reconstruction/ \
     && rm -rf /tmp/torch-build
-COPY third_party/GVHMR third_party/GVHMR
+# 4DAnyone records the GVHMR commit in its motion cache. This checkout must
+# own its Git metadata; a Docker copy of a submodule loses its parent gitdir.
+ARG GVHMR_REVISION=6ec3ca39336c50492c0fae65fba2fb831fc7d866
+RUN git init third_party/GVHMR \
+    && git -C third_party/GVHMR fetch --depth=1 https://github.com/zju3dv/GVHMR.git "$GVHMR_REVISION" \
+    && git -C third_party/GVHMR checkout --detach FETCH_HEAD \
+    && test "$(git -C third_party/GVHMR rev-parse HEAD)" = "$GVHMR_REVISION" \
+    && test "$(git -C third_party/GVHMR rev-parse --show-toplevel)" = "$PWD/third_party/GVHMR" \
+    && test -f third_party/GVHMR/hmr4d/__init__.py \
+    && test -f third_party/GVHMR/tools/demo/demo.py
 COPY inference.py reconstruct.py ./
 COPY scripts scripts
 COPY workbench workbench
