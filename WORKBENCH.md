@@ -9,8 +9,12 @@ produces a dynamic NPZ, an orbit MP4, and a resumable trainer checkpoint.
 1. Select the image `ghcr.io/pareekshit28/4danyone-workbench:latest` and leave
    the container command at its default. Choose a single CUDA GPU. A 48 GB
    RTX 6000 Ada gives headroom over upstream's reported 22 GB inference peak.
+   For a private GHCR package, select a RunPod container registry credential
+   with your GitHub username and a classic token with `read:packages`.
 2. Mount persistent storage at `/workspace`. The image stores models, jobs
-   and checkpoints in `/workspace/4danyone-workbench`.
+   and checkpoints in `/workspace/4danyone-workbench`. The public weights
+   alone take about 20 GiB. Leave additional room for each job's generated
+   views and extracted training frames.
 3. Expose HTTP port `8000` and set the `WORKBENCH_PASSWORD` environment
    variable. Open port 8000 from the pod's Connect menu and sign in as
    `workbench` with that password.
