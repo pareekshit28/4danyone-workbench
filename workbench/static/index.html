@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>4DAnyone Workbench</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="shell brand"><span class="mark" aria-hidden="true">4D</span> 4DAnyone <span class="muted">Workbench</span></div>
+  </header>
+  <main class="shell">
+    <h1>Reconstruct a performance</h1>
+    <p class="intro">Upload a single-camera clip to create a dynamic Gaussian scene.</p>
+    <p id="notice" role="status" hidden></p>
+    <aside id="setup" class="panel" hidden>
+      <h2>Set up SMPL-X</h2>
+      <p>Download the licensed model from <a href="https://smpl-x.is.tue.mpg.de/" target="_blank" rel="noreferrer">SMPL-X</a> and select <code>SMPLX_NEUTRAL.npz</code> from the archive.</p>
+      <form id="model-form">
+        <input aria-label="SMPL-X neutral model" type="file" name="model" accept=".npz" required>
+        <button>Install model</button>
+      </form>
+    </aside>
+    <div class="columns">
+      <section class="panel">
+        <h2>Source video</h2>
+        <form id="job-form">
+          <label class="drop" id="drop">
+            <input id="video" name="video" type="file" accept=".mp4,.mov,.m4v,.webm,.mkv,.avi,video/*" required>
+            <span class="upload-icon" aria-hidden="true">↑</span>
+            <strong id="filename">Choose a video or drop it here</strong>
+            <span>Up to 90 MiB</span>
+          </label>
+          <video id="source-player" controls playsinline preload="metadata" hidden></video>
+          <p class="hint">Use one clearly visible person and leave at least 121 frames after the start time.</p>
+          <label for="start">Start time <span class="muted">(seconds)</span></label>
+          <div class="field-row">
+            <input id="start" name="start" type="number" min="0" step="any" value="0" required>
+            <button id="use-time" class="secondary" type="button" disabled>Use playhead</button>
+          </div>
+          <label for="preset">Quality</label>
+          <select id="preset" name="preset">
+            <option value="preview">Preview · 6 views · 5,000 steps</option>
+            <option value="standard" selected>Standard · 24 views · 30,000 steps</option>
+            <option value="detail">High detail · 48 views · 100,000 steps</option>
+          </select>
+          <button id="run">Start reconstruction</button>
+          <progress id="upload-progress" aria-label="Upload progress" hidden></progress>
+        </form>
+      </section>
+      <section class="panel result">
+        <div class="heading"><h2>Reconstruction</h2><span id="status" class="status" hidden></span></div>
+        <div id="empty" class="empty">Your orbit preview and 4DGS model will appear here.</div>
+        <video id="orbit" controls playsinline preload="metadata" hidden></video>
+        <div id="downloads" class="actions" hidden>
+          <a id="model-link" class="button">Download 4DGS (.npz)</a>
+          <a id="orbit-link" class="button secondary">Download orbit (.mp4)</a>
+        </div>
+        <p id="failure" class="error" hidden></p>
+        <button id="resume" class="secondary" hidden>Resume job</button>
+        <details id="logs" hidden>
+          <summary>Job log</summary>
+          <pre id="log"></pre>
+          <a id="log-link">Download full log</a>
+        </details>
+      </section>
+    </div>
+    <section class="panel history">
+      <h2>Jobs</h2>
+      <p id="no-jobs" class="muted">No jobs yet.</p>
+      <ul id="jobs"></ul>
+    </section>
+  </main>
+</body>
+</html>

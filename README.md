@@ -165,6 +165,9 @@ https://github.com/user-attachments/assets/a51ec078-2970-4a37-9061-104211e1618d
 
 ## Reconstruction
 
+For upload-to-reconstruction in one browser window, see the
+[4DAnyone Workbench and RunPod setup](WORKBENCH.md).
+
 We provide a compact 4DGS training and viewer implementation. See the [4DGS guide](docs/4dgs.md) for details. Here are some training results:
 
 <p align="center"><img src="docs/assets/reconstruction.gif" width="100%" alt="4DGS reconstruction results for six scenes"></p>

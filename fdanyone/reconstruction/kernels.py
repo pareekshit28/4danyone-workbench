@@ -9,6 +9,22 @@ import torch
 
 @lru_cache(maxsize=1)
 def extension():
+    try:
+        from . import fdanyone_4dgs_kernels
+    except ImportError as exc:
+        if Path(__file__).with_name("fdanyone_4dgs_kernels.so").exists():
+            raise RuntimeError("The prebuilt 4DGS CUDA extension could not be loaded.") from exc
+    else:
+        return fdanyone_4dgs_kernels
+
+    try:
+        from . import fdanyone_4dgs_kernels
+    except ImportError as exc:
+        if Path(__file__).with_name("fdanyone_4dgs_kernels.so").exists():
+            raise RuntimeError("The prebuilt 4DGS CUDA extension could not be loaded.") from exc
+    else:
+        return fdanyone_4dgs_kernels
+
     from torch.utils.cpp_extension import load
 
     root = Path(__file__).parent / "cuda"
