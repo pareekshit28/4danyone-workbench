@@ -71,6 +71,7 @@ function drawJob(job) {
     byId("orbit").src = base + "orbit";
     byId("model-link").href = base + "model";
     byId("orbit-link").href = base + "orbit?download=true";
+    byId("zip-link").href = base + "zip";
   } else if (!done && byId("orbit").hasAttribute("src")) {
     byId("orbit").removeAttribute("src");
     byId("orbit").load();

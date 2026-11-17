@@ -6,10 +6,14 @@ import os
 import re
 import secrets
 import signal
+import subprocess
 import sys
 import zipfile
 from contextlib import asynccontextmanager
+from fractions import Fraction
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Lock
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
@@ -41,6 +45,7 @@ ARTIFACTS = {
 }
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 operation = asyncio.Lock()
+archive_lock = Lock()
 worker = None
 
 
@@ -319,13 +324,69 @@ async def resume(job_id: str):
 @app.get("/api/jobs/{job_id}/files/{kind}")
 def artifact(job_id: str, kind: str, download: bool = False):
     path = job_path(job_id)
-    if kind not in ARTIFACTS or (kind != "log" and read_job(path)["state"] != "complete"):
+    job = read_job(path)
+    if kind != "log" and job["state"] != "complete":
+        raise HTTPException(404)
+    stem = Path(job["name"]).stem
+    if kind == "zip":
+        return FileResponse(download_archive(path, job), filename=f"{stem}-4dgs.zip")
+    if kind not in ARTIFACTS:
         raise HTTPException(404)
     file = path / ARTIFACTS[kind]
     if not file.is_file():
         raise HTTPException(404)
-    filename = f"{Path(read_job(path)['name']).stem}-{file.name}" if download or kind == "model" else None
+    filename = f"{stem}-{file.name}" if download or kind == "model" else None
     return FileResponse(file, filename=filename)
+
+
+def download_archive(path, job):
+    model = path / ARTIFACTS["model"]
+    if not model.is_file():
+        raise HTTPException(404, "The reconstruction model is missing.")
+    destination = path / "model-and-audio.zip"
+    with archive_lock:
+        if destination.is_file():
+            return destination
+        source = path / job["source"]
+        with TemporaryDirectory(prefix=".export-", dir=path) as temporary:
+            folder = Path(temporary)
+            audio = folder / "source-audio.m4a"
+            staged = folder / destination.name
+            try:
+                if source.is_file():
+                    extract_audio(source, path / "multiview" / "metadata.json", audio)
+                with zipfile.ZipFile(staged, "w") as archive:
+                    archive.write(model, "latest.npz")
+                    if audio.is_file():
+                        archive.write(audio, audio.name)
+                staged.replace(destination)
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+                raise HTTPException(500, "Could not prepare the archive. The NPZ is available separately.") from exc
+    return destination
+
+
+def extract_audio(source, metadata, output):
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,start_time:format=start_time",
+         "-of", "json", str(source)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    info = json.loads(probe.stdout)
+    streams = info["streams"]
+    if not any(stream["codec_type"] == "audio" for stream in streams):
+        return
+    clip = json.loads(metadata.read_text(encoding="utf-8"))["input"]
+    video = next(stream for stream in streams if stream["codec_type"] == "video")
+    origin = Fraction(info.get("format", {}).get("start_time", "0").replace("N/A", "0"))
+    video_start = Fraction(video.get("start_time", str(origin)).replace("N/A", str(origin)))
+    start = max(0, float(video_start - origin) + clip["start_time_seconds"])
+    duration = clip["num_frames"] / Fraction(clip["fps"])
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.9f}",
+         "-i", str(source), "-t", f"{float(duration):.9f}", "-map", "0:a:0",
+         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output)],
+        capture_output=True, check=True, timeout=120,
+    )
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "workbench" / "static"), name="static")
