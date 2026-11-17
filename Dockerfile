@@ -17,7 +17,7 @@ RUN uv pip install --index https://download.pytorch.org/whl/cu128 torch==2.8.0 t
     && uv pip install -r requirements.txt -r /tmp/reconstruction.txt -r workbench/requirements.txt \
     && uv cache clean
 # Ampere, Ada, Hopper and Blackwell. PTX covers newer compatible devices.
-ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0+PTX"
+ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 RUN MAX_JOBS=2 TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
     python -m pip install --no-cache-dir --no-build-isolation \
     "$(sed -n 's/^gsplat @ //p' requirements-4dgs.txt)"

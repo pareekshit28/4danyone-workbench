@@ -1,9 +1,9 @@
 const byId = id => document.getElementById(id);
 const labels = {
-  queued: "Queued", inference: "Generating views", training: "Reconstructing 4DGS",
+  queued: "Queued", preparing: "Preparing models", inference: "Generating views", training: "Reconstructing 4DGS",
   complete: "Complete", interrupted: "Interrupted", failed: "Failed"
 };
-const active = new Set(["queued", "inference", "training"]);
+const active = new Set(["preparing", "inference", "training"]);
 let selected = null;
 let sourceUrl;
 let submitting = false;
@@ -49,8 +49,8 @@ function upload(url, data, progress) {
 }
 
 function updateButtons() {
-  byId("run").disabled = submitting || running || !smplx;
-  byId("resume").disabled = submitting || running;
+  byId("run").disabled = submitting || !smplx;
+  byId("resume").disabled = submitting || !smplx;
   byId("model-form").querySelector("button").disabled = submitting || running;
 }
 
@@ -60,9 +60,9 @@ function drawJob(job) {
   byId("status").hidden = false;
   byId("status").textContent = labels[job.state];
   byId("empty").hidden = done;
-  byId("empty").textContent = active.has(job.state)
-    ? "Keep this tab open to follow progress, or return later to check the job."
-    : "The orbit preview will appear once reconstruction completes.";
+  byId("empty").textContent = job.state === "queued" ? "This job will start when a worker is available."
+    : active.has(job.state) ? "The job keeps running when you close this tab."
+      : "The orbit preview will appear once reconstruction completes.";
   byId("failure").hidden = !job.error;
   byId("failure").textContent = job.error || "";
   byId("resume").hidden = !["failed", "interrupted"].includes(job.state);
@@ -88,7 +88,8 @@ async function refresh() {
   try {
     const data = await get("/api/jobs");
     smplx = data.smplx;
-    running = data.jobs.some(job => active.has(job.state));
+    running = data.running > 0 || data.queued > 0;
+    byId("queue-count").textContent = `${data.running} of ${data.worker_limit} workers active · ${data.queued} queued`;
     byId("setup").hidden = smplx;
     byId("no-jobs").hidden = data.jobs.length > 0;
     selected ||= data.jobs[0]?.id;

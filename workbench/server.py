@@ -14,6 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
+from time import time_ns
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
@@ -21,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 
 from fdanyone.assets import SMPLX_MODEL
+from fdanyone.io import lock_output
 from fdanyone.views import VIEWS_PER_GROUP
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +48,6 @@ ARTIFACTS = {
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 operation = asyncio.Lock()
 archive_lock = Lock()
-worker = None
 
 
 def read_job(path):
@@ -102,14 +103,21 @@ async def command(log, script, *arguments):
         raise RuntimeError(f"{script} exited with code {code}. See the job log.")
 
 
-async def reconstruct(path, job):
-    if "preset" in job:
-        views, pitches, steps, batch, scale = LEGACY_PRESETS[job["preset"]]
-    else:
-        views, pitches, steps, batch, scale = job["views"], [15], job["steps"], 2, 1.0
+async def reconstruct(state, path, job):
     multiview = path / "multiview"
     try:
+        if "preset" in job:
+            views, pitches, steps, batch, scale = LEGACY_PRESETS[job["preset"]]
+        else:
+            views, pitches, steps, batch, scale = job["views"], [15], job["steps"], 2, 1.0
         with (path / "job.log").open("ab", buffering=0) as log:
+            if state.worker_limit > 1:
+                if not state.models_ready:
+                    save_job(path, job, state="preparing")
+                async with state.model_setup:
+                    if not state.models_ready:
+                        await command(log, "scripts/download_model.py", f"--model_dir={MODELS}")
+                        state.models_ready = True
             if not (multiview / "metadata.json").is_file():
                 save_job(path, job, state="inference")
                 await command(
@@ -143,20 +151,53 @@ async def reconstruct(path, job):
         save_job(path, job, state="failed", error=str(exc))
 
 
+async def run_worker(state):
+    while True:
+        path, job = await state.queue.get()
+        state.running += 1
+        try:
+            await reconstruct(state, path, job)
+        finally:
+            state.running -= 1
+            state.queue.task_done()
+
+
 @asynccontextmanager
 async def lifespan(app):
+    setting = os.environ.get("WORKBENCH_MAX_JOBS", "1")
+    try:
+        limit = int(setting)
+    except ValueError as exc:
+        raise RuntimeError("WORKBENCH_MAX_JOBS must be a positive integer.") from exc
+    if limit < 1:
+        raise RuntimeError("WORKBENCH_MAX_JOBS must be a positive integer.")
     JOBS.mkdir(parents=True, exist_ok=True)
     MODELS.mkdir(parents=True, exist_ok=True)
-    for model_part in MODELS.glob("incoming-*.part"):
-        model_part.unlink()
-    for record in JOBS.glob("*/job.json"):
-        job = read_job(record.parent)
-        if job["state"] in {"queued", "inference", "training"}:
-            save_job(record.parent, job, state="interrupted")
-    yield
-    if worker and not worker.done():
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+    state = app.state
+    with lock_output(JOBS):
+        state.worker_limit = limit
+        state.queue = asyncio.Queue()
+        state.running = 0
+        state.model_setup = asyncio.Lock()
+        state.models_ready = False
+        for model_part in MODELS.glob("incoming-*.part"):
+            model_part.unlink()
+        queued = []
+        for record in JOBS.glob("*/job.json"):
+            job = read_job(record.parent)
+            if job["state"] in {"preparing", "inference", "training"}:
+                save_job(record.parent, job, state="interrupted")
+            elif job["state"] == "queued":
+                queued.append((job.get("queued_at", record.stat().st_mtime_ns), record.parent, job))
+        for _, path, job in sorted(queued):
+            state.queue.put_nowait((path, job))
+        workers = [asyncio.create_task(run_worker(state)) for _ in range(limit)]
+        try:
+            yield
+        finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -192,9 +233,13 @@ def home():
 
 
 @app.get("/api/jobs")
-def jobs():
+async def jobs(request: Request):
+    state = request.app.state
     return {
         "smplx": (MODELS / SMPLX_MODEL).is_file(),
+        "worker_limit": state.worker_limit,
+        "running": state.running,
+        "queued": state.queue.qsize(),
         "jobs": [read_job(record.parent)
                  for record in sorted(JOBS.glob("*/job.json"), key=lambda p: p.parent.stat().st_mtime, reverse=True)],
     }
@@ -223,7 +268,9 @@ async def store(upload, destination):
 
 
 @app.post("/api/smplx/{upload_id}")
-async def install_smplx_part(upload_id: str, part: UploadFile, offset: int = Form(), total: int = Form()):
+async def install_smplx_part(
+    request: Request, upload_id: str, part: UploadFile, offset: int = Form(), total: int = Form(),
+):
     from fdanyone.download import install_smplx
     from fdanyone.errors import AssetError
 
@@ -234,8 +281,9 @@ async def install_smplx_part(upload_id: str, part: UploadFile, offset: int = For
     if not block or len(block) > MODEL_PART or end > total:
         raise HTTPException(422, "Invalid SMPL-X upload chunk.")
     async with operation:
-        if worker and not worker.done():
-            raise HTTPException(409, "Wait for the running reconstruction.")
+        state = request.app.state
+        if state.running or not state.queue.empty():
+            raise HTTPException(409, "Wait for active and queued reconstructions to finish.")
         source = MODELS / f"incoming-{upload_id}.part"
         if (source.stat().st_size if source.exists() else 0) != offset:
             raise HTTPException(409, "The model upload was interrupted. Select the file and try again.")
@@ -263,13 +311,13 @@ async def install_smplx_part(upload_id: str, part: UploadFile, offset: int = For
 
 @app.post("/api/jobs", status_code=202)
 async def create_job(
+    request: Request,
     video: UploadFile,
     views: int | None = Form(None),
     steps: int | None = Form(None),
     start: float = Form(0),
     preset: str | None = Form(None),
 ):
-    global worker
     suffix = Path(video.filename or "").suffix.lower()
     if suffix not in VIDEO_SUFFIXES or not math.isfinite(start) or start < 0:
         raise HTTPException(422, "Choose a supported video and a valid start time.")
@@ -286,8 +334,6 @@ async def create_job(
             raise HTTPException(422, "Training steps must be a positive whole number.")
         settings = {"views": views, "steps": steps}
     async with operation:
-        if worker and not worker.done():
-            raise HTTPException(409, "A reconstruction is already running.")
         if not (MODELS / SMPLX_MODEL).is_file():
             raise HTTPException(409, "Install SMPL-X before starting a reconstruction.")
         job_id = uuid4().hex
@@ -296,28 +342,27 @@ async def create_job(
         job = dict(id=job_id, name=video.filename, start=start, source=f"source{suffix}", **settings)
         try:
             await store(video, path / job["source"])
-            save_job(path, job, state="queued")
+            save_job(path, job, state="queued", queued_at=time_ns())
         except BaseException:
             (path / job["source"]).unlink(missing_ok=True)
             (path / "job.tmp").unlink(missing_ok=True)
             path.rmdir()
             raise
-        worker = asyncio.create_task(reconstruct(path, job))
+        request.app.state.queue.put_nowait((path, job))
         return job
 
 
 @app.post("/api/jobs/{job_id}/resume", status_code=202)
-async def resume(job_id: str):
-    global worker
+async def resume(request: Request, job_id: str):
     path = job_path(job_id)
     async with operation:
-        if worker and not worker.done():
-            raise HTTPException(409, "A reconstruction is already running.")
         job = read_job(path)
         if job["state"] not in {"failed", "interrupted"}:
             raise HTTPException(409, "Only failed or interrupted jobs can be resumed.")
-        save_job(path, job, state="queued", error=None)
-        worker = asyncio.create_task(reconstruct(path, job))
+        if not (MODELS / SMPLX_MODEL).is_file():
+            raise HTTPException(409, "Install SMPL-X before resuming a reconstruction.")
+        save_job(path, job, state="queued", error=None, queued_at=time_ns())
+        request.app.state.queue.put_nowait((path, job))
         return job
 
 

@@ -35,9 +35,15 @@ produces a dynamic NPZ, an orbit MP4, and a resumable trainer checkpoint.
    **Download ZIP** bundles the NPZ with the matching segment of the source
    audio as an M4A when the upload has an audio track.
 
-One GPU job runs at a time. If the pod stops, restart it with the same
-storage and choose **Resume job**. This reuses completed multiview generation
-and the trainer's latest checkpoint when one is available.
+Submissions are queued in order and can run concurrently on the same GPU.
+Set `WORKBENCH_MAX_JOBS=2` in the RunPod environment to start with two workers
+on a 180 GB B200. The default is one worker. The Workbench does not
+automatically size the worker limit to GPU memory.
+
+If the pod stops, restart it with the same storage. Waiting jobs remain
+queued. Choose **Resume job** for work interrupted during processing.
+This reuses completed multiview generation and the latest training
+checkpoint when available. Run one Workbench instance per data volume.
 
 ## Interactive playback
 
