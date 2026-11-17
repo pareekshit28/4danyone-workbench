@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 
 from fdanyone.assets import SMPLX_MODEL
+from fdanyone.views import VIEWS_PER_GROUP
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get("WORKBENCH_DATA", ROOT / "data" / "workbench")).resolve()
@@ -26,7 +27,9 @@ PASSWORD = os.environ.get("WORKBENCH_PASSWORD")
 LIMIT = 90 * 1024**2
 MODEL_LIMIT = 256 * 1024**2
 MODEL_PART = 16 * 1024**2
-PRESETS = {
+DEFAULT_VIEWS = 6
+DEFAULT_STEPS = 10000
+LEGACY_PRESETS = {
     "preview": (6, [15], 5000, 2, 0.75),
     "standard": (24, [15], 30000, 2, 1.0),
     "detail": (16, [-10, 15, 35], 100000, 2, 1.0),
@@ -95,7 +98,10 @@ async def command(log, script, *arguments):
 
 
 async def reconstruct(path, job):
-    views, pitches, steps, batch, scale = PRESETS[job["preset"]]
+    if "preset" in job:
+        views, pitches, steps, batch, scale = LEGACY_PRESETS[job["preset"]]
+    else:
+        views, pitches, steps, batch, scale = job["views"], [15], job["steps"], 2, 1.0
     multiview = path / "multiview"
     try:
         with (path / "job.log").open("ab", buffering=0) as log:
@@ -251,11 +257,29 @@ async def install_smplx_part(upload_id: str, part: UploadFile, offset: int = For
 
 
 @app.post("/api/jobs", status_code=202)
-async def create_job(video: UploadFile, preset: str = Form("standard"), start: float = Form(0)):
+async def create_job(
+    video: UploadFile,
+    views: int | None = Form(None),
+    steps: int | None = Form(None),
+    start: float = Form(0),
+    preset: str | None = Form(None),
+):
     global worker
     suffix = Path(video.filename or "").suffix.lower()
-    if suffix not in VIDEO_SUFFIXES or preset not in PRESETS or not math.isfinite(start) or start < 0:
-        raise HTTPException(422, "Choose a supported video, a preset and a valid start time.")
+    if suffix not in VIDEO_SUFFIXES or not math.isfinite(start) or start < 0:
+        raise HTTPException(422, "Choose a supported video and a valid start time.")
+    if preset is not None:
+        if preset not in LEGACY_PRESETS or views is not None or steps is not None:
+            raise HTTPException(422, "Choose either an existing preset or separate views and steps.")
+        settings = {"preset": preset}
+    else:
+        views = DEFAULT_VIEWS if views is None else views
+        steps = DEFAULT_STEPS if steps is None else steps
+        if views <= 0 or views % VIEWS_PER_GROUP:
+            raise HTTPException(422, f"Views must be a positive multiple of {VIEWS_PER_GROUP}.")
+        if steps <= 0:
+            raise HTTPException(422, "Training steps must be a positive whole number.")
+        settings = {"views": views, "steps": steps}
     async with operation:
         if worker and not worker.done():
             raise HTTPException(409, "A reconstruction is already running.")
@@ -264,7 +288,7 @@ async def create_job(video: UploadFile, preset: str = Form("standard"), start: f
         job_id = uuid4().hex
         path = JOBS / job_id
         path.mkdir()
-        job = dict(id=job_id, name=video.filename, preset=preset, start=start, source=f"source{suffix}")
+        job = dict(id=job_id, name=video.filename, start=start, source=f"source{suffix}", **settings)
         try:
             await store(video, path / job["source"])
             save_job(path, job, state="queued")

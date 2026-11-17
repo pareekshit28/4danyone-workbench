@@ -29,7 +29,8 @@ produces a dynamic NPZ, an orbit MP4, and a resumable trainer checkpoint.
 
 5. Upload a video with one clearly visible person. Choose a start time that
    leaves at least 121 usable frames. The GUI accepts files up to 90 MiB.
-   Select **Preview** for the first run. Public model weights download on the
+   Set **Views** and **Training steps** independently. The defaults are
+   6 views and 10,000 steps. Views must be a multiple of 6. Public model weights download on the
    first job. Follow the job log, play the orbit, and download the NPZ.
 
 One GPU job runs at a time. If the pod stops, restart it with the same

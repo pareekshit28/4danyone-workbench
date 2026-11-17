@@ -41,12 +41,11 @@
             <input id="start" name="start" type="number" min="0" step="any" value="0" required>
             <button id="use-time" class="secondary" type="button" disabled>Use playhead</button>
           </div>
-          <label for="preset">Quality</label>
-          <select id="preset" name="preset">
-            <option value="preview">Preview · 6 views · 5,000 steps</option>
-            <option value="standard" selected>Standard · 24 views · 30,000 steps</option>
-            <option value="detail">High detail · 48 views · 100,000 steps</option>
-          </select>
+          <label for="views">Views</label>
+          <input id="views" name="views" type="number" min="6" step="6" value="6" aria-describedby="views-hint" required>
+          <p id="views-hint" class="hint">Use a multiple of 6.</p>
+          <label for="steps">Training steps</label>
+          <input id="steps" name="steps" type="number" min="1" step="1" value="10000" required>
           <button id="run">Start reconstruction</button>
           <progress id="upload-progress" aria-label="Upload progress" max="1" hidden></progress>
         </form>
