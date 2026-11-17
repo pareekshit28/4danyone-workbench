@@ -22,6 +22,7 @@
         <input aria-label="SMPL-X neutral model" type="file" name="model" accept=".npz" required>
         <button>Install model</button>
       </form>
+      <progress id="model-progress" aria-label="Model upload progress" max="1" hidden></progress>
     </aside>
     <div class="columns">
       <section class="panel">
@@ -47,7 +48,7 @@
             <option value="detail">High detail · 48 views · 100,000 steps</option>
           </select>
           <button id="run">Start reconstruction</button>
-          <progress id="upload-progress" aria-label="Upload progress" hidden></progress>
+          <progress id="upload-progress" aria-label="Upload progress" max="1" hidden></progress>
         </form>
       </section>
       <section class="panel result">

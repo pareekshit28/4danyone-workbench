@@ -161,14 +161,32 @@ async function submit(action) {
   finally {
     submitting = false;
     byId("upload-progress").hidden = true;
+    byId("model-progress").hidden = true;
     await refresh();
   }
 }
 
 byId("model-form").onsubmit = event => {
   event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  submit(() => upload("/api/smplx", data));
+  const model = new FormData(event.currentTarget).get("model");
+  submit(async () => {
+    if (model.name !== "SMPLX_NEUTRAL.npz" || !model.size || model.size > 256 * 1024 ** 2) {
+      throw new Error("Select SMPLX_NEUTRAL.npz from the official SMPL-X archive.");
+    }
+    const progress = byId("model-progress");
+    progress.value = 0;
+    progress.hidden = false;
+    const url = "/api/smplx/" + crypto.randomUUID().replaceAll("-", "");
+    const chunkSize = 16 * 1024 ** 2;
+    for (let offset = 0; offset < model.size; offset += chunkSize) {
+      const data = new FormData();
+      data.set("part", model.slice(offset, offset + chunkSize), "chunk");
+      data.set("offset", offset);
+      data.set("total", model.size);
+      const result = await upload(url, data);
+      progress.value = result.received / model.size;
+    }
+  });
 };
 byId("job-form").onsubmit = event => {
   event.preventDefault();

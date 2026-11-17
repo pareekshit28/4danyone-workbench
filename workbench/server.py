@@ -5,7 +5,9 @@ import math
 import os
 import re
 import secrets
+import signal
 import sys
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +24,8 @@ MODELS = DATA / "models"
 JOBS = DATA / "jobs"
 PASSWORD = os.environ.get("WORKBENCH_PASSWORD")
 LIMIT = 90 * 1024**2
+MODEL_LIMIT = 256 * 1024**2
+MODEL_PART = 16 * 1024**2
 PRESETS = {
     "preview": (6, [15], 5000, 2, 0.75),
     "standard": (24, [15], 30000, 2, 1.0),
@@ -67,15 +71,23 @@ def latest_log(path):
 
 
 async def command(log, script, *arguments):
+    process_group = sys.platform != "win32"
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-u", script, *arguments,
         cwd=ROOT, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log,
+        start_new_session=process_group,
     )
     try:
         code = await process.wait()
     except asyncio.CancelledError:
         if process.returncode is None:
-            process.kill()
+            if process_group:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
             await process.wait()
         raise
     if code:
@@ -84,25 +96,25 @@ async def command(log, script, *arguments):
 
 async def reconstruct(path, job):
     views, pitches, steps, batch, scale = PRESETS[job["preset"]]
+    multiview = path / "multiview"
     try:
         with (path / "job.log").open("ab", buffering=0) as log:
-            if not job.get("inference_complete"):
+            if not (multiview / "metadata.json").is_file():
                 save_job(path, job, state="inference")
                 await command(
                     log, "inference.py",
                     f"--video_path={path / job['source']}",
-                    f"--output_dir={path / 'multiview'}",
+                    f"--output_dir={multiview}",
                     f"--model_dir={MODELS}",
                     f"--start_time={job['start']}",
                     f"--views_per_layer={views}",
                     f"--layer_pitches={json.dumps(pitches)}",
                     "--gpu_ids=[0]",
                 )
-                save_job(path, job, inference_complete=True)
             save_job(path, job, state="training")
             await command(
                 log, "reconstruct.py",
-                f"--data_dir={path / 'multiview'}",
+                f"--data_dir={multiview}",
                 f"--output_dir={path / 'reconstruction'}",
                 f"--model_dir={MODELS}",
                 f"--steps={steps}",
@@ -124,6 +136,8 @@ async def reconstruct(path, job):
 async def lifespan(app):
     JOBS.mkdir(parents=True, exist_ok=True)
     MODELS.mkdir(parents=True, exist_ok=True)
+    for model_part in MODELS.glob("incoming-*.part"):
+        model_part.unlink()
     for record in JOBS.glob("*/job.json"):
         job = read_job(record.parent)
         if job["state"] in {"queued", "inference", "training"}:
@@ -197,27 +211,43 @@ async def store(upload, destination):
         raise
 
 
-@app.post("/api/smplx")
-async def install_smplx(model: UploadFile):
+@app.post("/api/smplx/{upload_id}")
+async def install_smplx_part(upload_id: str, part: UploadFile, offset: int = Form(), total: int = Form()):
     from fdanyone.download import install_smplx
     from fdanyone.errors import AssetError
 
-    if model.filename != "SMPLX_NEUTRAL.npz":
-        raise HTTPException(422, "Select SMPLX_NEUTRAL.npz from the official SMPL-X archive.")
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id) or not 0 <= offset < total <= MODEL_LIMIT:
+        raise HTTPException(422, "Invalid SMPL-X upload range or file size.")
+    block = await part.read(MODEL_PART + 1)
+    end = offset + len(block)
+    if not block or len(block) > MODEL_PART or end > total:
+        raise HTTPException(422, "Invalid SMPL-X upload chunk.")
     async with operation:
         if worker and not worker.done():
             raise HTTPException(409, "Wait for the running reconstruction.")
-        incoming = MODELS / "incoming"
-        incoming.mkdir(exist_ok=True)
-        source = incoming / "SMPLX_NEUTRAL.npz"
+        source = MODELS / f"incoming-{upload_id}.part"
+        if (source.stat().st_size if source.exists() else 0) != offset:
+            raise HTTPException(409, "The model upload was interrupted. Select the file and try again.")
+        with source.open("ab") as stream:
+            stream.write(block)
+        if end < total:
+            return {"received": end}
+        neutral = MODELS / "SMPLX_NEUTRAL.npz"
         try:
-            await store(model, source)
-            await asyncio.to_thread(install_smplx, source, MODELS, ROOT / "third_party/GVHMR")
+            with zipfile.ZipFile(source) as archive:
+                required = {"v_template.npy", "shapedirs.npy", "posedirs.npy", "J_regressor.npy"}
+                if not required.issubset(archive.namelist()):
+                    raise zipfile.BadZipFile
+            source.replace(neutral)
+            await asyncio.to_thread(install_smplx, neutral, MODELS, ROOT / "third_party/GVHMR")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(422, "Select SMPLX_NEUTRAL.npz from the official SMPL-X archive.") from exc
         except AssetError as exc:
             raise HTTPException(422, str(exc)) from exc
         finally:
             source.unlink(missing_ok=True)
-    return {"installed": True}
+            neutral.unlink(missing_ok=True)
+    return {"received": end, "installed": True}
 
 
 @app.post("/api/jobs", status_code=202)
